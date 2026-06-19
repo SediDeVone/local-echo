@@ -28,7 +28,7 @@ class LocalEchoApp(rumps.App):
         
         # Defaults configuration
         self.notes_dir = os.path.expanduser("~/Documents/Meetings")
-        self.whisper_model = "mlx-community/whisper-base-mlx"
+        self.whisper_model = "mlx-community/whisper-small-mlx"
         self.ollama_model = "llama3.2:3b"
         self.mock = False
         self.capture_microphone = True
@@ -119,7 +119,7 @@ class LocalEchoApp(rumps.App):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Local Echo - Local-First Live Meeting Transcriber & Automated Agent")
     parser.add_argument("--mock", action="store_true", help="Activate mock simulated audio buffer capture instead of ScreenCaptureKit")
-    parser.add_argument("--whisper", type=str, default="mlx-community/whisper-base-mlx", help="MLX Whisper Hugging Face model repository")
+    parser.add_argument("--whisper", type=str, default="mlx-community/whisper-small-mlx", help="MLX Whisper Hugging Face model repository")
     parser.add_argument("--ollama", type=str, default="llama3.2:3b", help="Local Ollama reasoning model name")
     parser.add_argument("--dir", type=str, default=None, help="Custom folder destination to write meeting notes markdown files")
     parser.add_argument("--no-mic", action="store_true", help="Disable native microphone capture to isolate system audio")

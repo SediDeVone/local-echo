@@ -84,7 +84,7 @@ class MeetingNotesManager:
 
 
 class TranscriptionPipeline:
-    def __init__(self, audio_capture, model_name="mlx-community/whisper-base-mlx", notes_dir=None, intent_interceptor=None):
+    def __init__(self, audio_capture, model_name="mlx-community/whisper-small-mlx", notes_dir=None, intent_interceptor=None):
         self.audio_capture = audio_capture
         self.model_name = model_name
         self.intent_interceptor = intent_interceptor
@@ -142,24 +142,42 @@ class TranscriptionPipeline:
                     self.sys_buffer.append(chunk)
                 elif type_ == 2:
                     self.mic_buffer.append(chunk)
-            
-            # Check if system audio buffer is full
-            total_sys = sum(len(x) for x in self.sys_buffer)
-            if total_sys >= self.required_samples:
-                audio_data = np.concatenate(self.sys_buffer)
-                # Keep last N seconds as overlap for next chunk context
-                overlap = audio_data[-self.overlap_samples:] if len(audio_data) > self.overlap_samples else audio_data
-                self.sys_buffer = [overlap]
-                self._process_audio(audio_data, source="System", last_text=self.sys_last_text)
 
-            # Check if microphone audio buffer is full
+            # VAD-based flushing for system audio buffer
+            total_sys = sum(len(x) for x in self.sys_buffer)
+            if total_sys > 0:
+                audio_data = np.concatenate(self.sys_buffer)
+                silence_idx = self._find_silence_boundary(audio_data)
+                should_flush = (silence_idx is not None) or (total_sys >= 480000)
+
+                if should_flush:
+                    if silence_idx is not None:
+                        speech_data = audio_data[:silence_idx]
+                        remainder = audio_data[silence_idx:]
+                        self.sys_buffer = [remainder] if len(remainder) > 0 else []
+                    else:
+                        speech_data = audio_data
+                        self.sys_buffer = []
+
+                    self._process_audio(speech_data, source="System", last_text=self.sys_last_text)
+
+            # VAD-based flushing for microphone audio buffer
             total_mic = sum(len(x) for x in self.mic_buffer)
-            if total_mic >= self.required_samples:
+            if total_mic > 0:
                 audio_data = np.concatenate(self.mic_buffer)
-                # Keep last N seconds as overlap for next chunk context
-                overlap = audio_data[-self.overlap_samples:] if len(audio_data) > self.overlap_samples else audio_data
-                self.mic_buffer = [overlap]
-                self._process_audio(audio_data, source="Microphone", last_text=self.mic_last_text)
+                silence_idx = self._find_silence_boundary(audio_data)
+                should_flush = (silence_idx is not None) or (total_mic >= 480000)
+
+                if should_flush:
+                    if silence_idx is not None:
+                        speech_data = audio_data[:silence_idx]
+                        remainder = audio_data[silence_idx:]
+                        self.mic_buffer = [remainder] if len(remainder) > 0 else []
+                    else:
+                        speech_data = audio_data
+                        self.mic_buffer = []
+
+                    self._process_audio(speech_data, source="Microphone", last_text=self.mic_last_text)
 
         # Process any remaining audio samples left in buffers upon stopping
         if self.sys_buffer:
@@ -241,6 +259,36 @@ class TranscriptionPipeline:
 
         except Exception as e:
             print(f"[TranscriptionPipeline] ASR Error on {source} audio: {e}", file=sys.stderr)
+
+    def _find_silence_boundary(self, audio_buffer, silence_threshold=0.0025, min_silence_frames=60):
+        """
+        Find the start of the longest trailing silence in the audio buffer.
+        silence_threshold: RMS below this = silent frame
+        min_silence_frames: number of consecutive silent frames to trigger (at 16kHz, 60 frames ≈ 1.9s)
+        Returns: sample index where trailing silence begins, or None if no silence found
+        """
+        if len(audio_buffer) < 16000:
+            return None
+
+        frame_size = 512
+        silence_count = 0
+        silence_start = None
+
+        for i in range(len(audio_buffer) - frame_size, -1, -frame_size):
+            frame = audio_buffer[i:i+frame_size]
+            rms = np.sqrt(np.mean(frame ** 2))
+
+            if rms < silence_threshold:
+                silence_count += 1
+                if silence_start is None:
+                    silence_start = i + frame_size
+                if silence_count >= min_silence_frames:
+                    return silence_start
+            else:
+                silence_count = 0
+                silence_start = None
+
+        return None
 
     def _is_phrase_hallucination(self, text):
         """Detect if text is dominated by repeated sentences (Whisper hallucination on silence)."""

@@ -32,8 +32,6 @@ def init_pyobjc():
 
             @objc.typedSelector(b'v@:@^{opaqueCMSampleBuffer=}q')
             def stream_didOutputSampleBuffer_ofType_(self, stream, sampleBuffer, type_):
-                print(f"[SCK Delegate] Callback triggered! type={type_}")
-                sys.stdout.flush()
                 try:
                     from CoreMedia import (
                         CMSampleBufferGetDataBuffer,
@@ -149,15 +147,6 @@ def init_pyobjc():
                     
                     # Push mono samples to the queue
                     self.queue.put((type_, samples))
-                    
-                    # Log volume occasionally for diagnostics
-                    if len(samples) > 0:
-                        if not hasattr(self, "_log_count"):
-                            self._log_count = 0
-                        self._log_count += 1
-                        if self._log_count % 10 == 0:
-                            rms = np.sqrt(np.mean(samples**2))
-                            print(f"[SCK Audio] Captured {len(samples)} samples. RMS={rms:.6f}")
                     
                 except Exception as e:
                     print(f"[AudioCaptureDelegate] Callback error: {e}", file=sys.stderr)
