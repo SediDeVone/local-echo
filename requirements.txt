@@ -1,0 +1,11 @@
+numpy
+mlx-whisper
+rumps
+ollama
+pyobjc-framework-ScreenCaptureKit
+pyobjc-framework-Cocoa
+pyobjc-framework-CoreMedia
+pyobjc-framework-CoreAudio
+pyobjc-framework-libdispatch
+pyobjc-framework-Quartz
+
