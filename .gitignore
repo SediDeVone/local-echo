@@ -149,6 +149,7 @@ cython_debug/
 # PyCharm
 #  JetBrains specific template is usually better, but adding .idea here for safety
 .idea/
+.idea/junie.xml
 
 # macOS
 .DS_Store
