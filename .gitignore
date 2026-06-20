@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 test_meetings_dir/
 *.tmp
+meeting_*.md
+meeting_*.wav
+.junie/
