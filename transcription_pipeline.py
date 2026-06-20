@@ -3,6 +3,7 @@ import os
 import queue
 import threading
 import time
+import wave
 from datetime import datetime
 import mlx_whisper
 import sys
@@ -21,6 +22,7 @@ class MeetingNotesManager:
         self.action_items = []
         self.transcript_segments = []
         self.summary = None
+        self.full_transcript = None
         self.lock = threading.Lock()
         self.started_at = datetime.now()
 
@@ -43,6 +45,11 @@ class MeetingNotesManager:
             self.summary = summary_text
             self.flush()
 
+    def add_full_transcript(self, text):
+        with self.lock:
+            self.full_transcript = text
+            self.flush()
+
     def flush(self):
         content = []
         content.append(f"# Meeting Notes: {self.started_at.strftime('%Y-%m-%d %H:%M')}\n")
@@ -58,14 +65,19 @@ class MeetingNotesManager:
                 content.append(item)
         else:
             content.append("*No action items recorded yet.*")
-        
+
         content.append("\n---\n")
-        content.append("## Transcript")
+        content.append("## Live Transcript")
         if self.transcript_segments:
             for seg in self.transcript_segments:
                 content.append(seg)
         else:
             content.append("*Transcription active...*")
+
+        if self.full_transcript:
+            content.append("\n---\n")
+            content.append("## Full Recording Transcript")
+            content.append(self.full_transcript)
         
         # Write atomically using a temporary file
         temp_path = self.filepath + ".tmp"
@@ -103,12 +115,30 @@ class TranscriptionPipeline:
         self.sys_last_text = ""
         self.mic_last_text = ""
 
+        self._wav_writer = None
+        self._wav_path = None
+        self._wav_lock = threading.Lock()
+
     def start(self):
         if self.running:
             return
         self.running = True
         self.sys_buffer = []
         self.mic_buffer = []
+
+        # Open WAV file for streaming full system audio
+        wav_path = self.notes_manager.filepath.replace('.md', '.wav')
+        self._wav_path = wav_path
+        try:
+            w = wave.open(wav_path, 'wb')
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            self._wav_writer = w
+            print(f"[TranscriptionPipeline] Full audio recording to: {wav_path}")
+        except Exception as e:
+            print(f"[TranscriptionPipeline] WARNING: Could not open WAV file: {e}", file=sys.stderr)
+
         self.thread = threading.Thread(target=self._worker_loop, daemon=True)
         self.thread.start()
         print("Transcription pipeline thread spawned.")
@@ -117,8 +147,15 @@ class TranscriptionPipeline:
         if not self.running:
             return
         self.running = False
+        with self._wav_lock:
+            if self._wav_writer:
+                try:
+                    self._wav_writer.close()
+                except Exception as e:
+                    print(f"[TranscriptionPipeline] Error closing WAV file: {e}", file=sys.stderr)
+                self._wav_writer = None
         if self.thread:
-            self.thread.join(timeout=60.0)
+            self.thread.join(timeout=120.0)
             self.thread = None
         print("Transcription pipeline thread joined.")
 
@@ -140,6 +177,14 @@ class TranscriptionPipeline:
                 type_, chunk = item
                 if type_ == 1:
                     self.sys_buffer.append(chunk)
+                    # Stream System audio to WAV file
+                    with self._wav_lock:
+                        if self._wav_writer:
+                            try:
+                                pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
+                                self._wav_writer.writeframes(pcm.tobytes())
+                            except Exception as e:
+                                print(f"[TranscriptionPipeline] Error writing WAV: {e}", file=sys.stderr)
                 elif type_ == 2:
                     self.mic_buffer.append(chunk)
 
@@ -191,7 +236,17 @@ class TranscriptionPipeline:
             self.mic_buffer = []
             self._process_audio(audio_data, source="Microphone", last_text=self.mic_last_text)
 
-        # Generate automatic meeting summary at the very end of the worker thread
+        # Close WAV writer before full transcription pass
+        with self._wav_lock:
+            if self._wav_writer:
+                try:
+                    self._wav_writer.close()
+                except Exception as e:
+                    print(f"[TranscriptionPipeline] Error closing WAV file at end: {e}", file=sys.stderr)
+                self._wav_writer = None
+
+        # Run full-recording transcription and generate summary
+        self._transcribe_full_recording()
         self.generate_summary()
 
     def _process_audio(self, audio_data, source="System", last_text=""):
@@ -317,6 +372,30 @@ class TranscriptionPipeline:
                 return stripped if stripped else text
 
         return text
+
+    def _transcribe_full_recording(self):
+        """Run full-recording Whisper pass on the saved WAV file."""
+        if not self._wav_path or not os.path.exists(self._wav_path):
+            return
+
+        print("[TranscriptionPipeline] Running full-recording Whisper pass...")
+        try:
+            with wave.open(self._wav_path, 'rb') as wf:
+                frames = wf.readframes(wf.getnframes())
+            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
+
+            result = mlx_whisper.transcribe(
+                audio_data,
+                path_or_hf_repo=self.model_name,
+                language="en",
+                no_speech_threshold=0.6
+            )
+            full_text = result.get("text", "").strip()
+            if full_text:
+                self.notes_manager.add_full_transcript(full_text)
+                print("[TranscriptionPipeline] Full recording transcript added to notes.")
+        except Exception as e:
+            print(f"[TranscriptionPipeline] Full recording transcription failed: {e}", file=sys.stderr)
 
     def generate_summary(self):
         if not self.notes_manager.transcript_segments:
